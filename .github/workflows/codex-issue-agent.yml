@@ -1,0 +1,231 @@
+name: Codex Issue Agent
+
+on:
+  workflow_call:
+    inputs:
+      base-branch:
+        description: Branch to check out before creating the working branch.
+        required: false
+        default: master
+        type: string
+      branch-prefix:
+        description: Prefix used when generating the working branch name.
+        required: false
+        default: codex/issue-
+        type: string
+      require-owner:
+        description: Only run when the issue author matches the repository owner.
+        required: false
+        default: true
+        type: boolean
+      prompt:
+        description: Full prompt to send to Codex. Overrides the default prompt template when provided.
+        required: false
+        default: ""
+        type: string
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+      OPENAI_RESPONSES_ENDPOINT:
+        required: false
+      GITHUB_TOKEN:
+        required: true
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  codex:
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_RESPONSES_ENDPOINT: ${{ secrets.OPENAI_RESPONSES_ENDPOINT }}
+    steps:
+      - name: Evaluate issue trigger and branch
+        id: evaluate
+        shell: bash
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          REQUIRE_OWNER: ${{ inputs.require-owner }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+        run: |
+          set -eo pipefail
+
+          echo "should_run=false" >> "$GITHUB_OUTPUT"
+          echo "skip_reason=" >> "$GITHUB_OUTPUT"
+
+          if [[ -z "${ISSUE_BODY:-}" ]]; then
+            echo "skip_reason=Issue body is empty; nothing to do." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "${REQUIRE_OWNER}" == "true" && "${ISSUE_AUTHOR}" != "${REPO_OWNER}" ]]; then
+            echo "skip_reason=Issue author \"${ISSUE_AUTHOR}\" does not match repository owner \"${REPO_OWNER}\"." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          first_line=$(printf '%s\n' "$ISSUE_BODY" | sed -n '/\S/{s/^[[:space:]]*//;p;q}')
+          if [[ -z "$first_line" || "${first_line%%[[:space:]]*}" != "/codex" ]]; then
+            echo "skip_reason=Issue does not start with the /codex trigger." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          branch_line=$(printf '%s\n' "$ISSUE_BODY" | grep -m1 '^branch:' || true)
+          if [[ -z "$branch_line" ]]; then
+            branch="${BRANCH_PREFIX}${ISSUE_NUMBER}"
+          else
+            branch=$(echo "$branch_line" | cut -d':' -f2- | xargs)
+          fi
+
+          if ! git check-ref-format --allow-onelevel "$branch"; then
+            echo "::error::Invalid branch name \"$branch\"."
+            exit 1
+          fi
+
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        if: steps.evaluate.outputs.should_run == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base-branch }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Create working branch
+        if: steps.evaluate.outputs.should_run == 'true'
+        env:
+          TARGET_BRANCH: ${{ steps.evaluate.outputs.branch }}
+          BASE_BRANCH: ${{ inputs.base-branch }}
+        run: |
+          git fetch origin "$BASE_BRANCH"
+          git checkout -B "$TARGET_BRANCH" "origin/$BASE_BRANCH"
+
+      - name: Validate OpenAI configuration
+        if: steps.evaluate.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+            echo "::error::OPENAI_API_KEY secret is required for this workflow."
+            exit 1
+          fi
+          # OPENAI_RESPONSES_ENDPOINT is optional; omit it to use the action's default OpenAI endpoint.
+          # Supply a custom value only when targeting an Azure/OpenAI Responses deployment.
+
+      - name: Configure Git author
+        if: steps.evaluate.outputs.should_run == 'true'
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "github-actions@users.noreply.github.com"
+
+      - name: Assemble prompt
+        if: steps.evaluate.outputs.should_run == 'true'
+        id: assemble_prompt
+        shell: bash
+        env:
+          CUSTOM_PROMPT: ${{ inputs.prompt }}
+          REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          BRANCH_NAME: ${{ steps.evaluate.outputs.branch }}
+          BASE_BRANCH: ${{ inputs.base-branch }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${CUSTOM_PROMPT// }" ]]; then
+            final_prompt="${CUSTOM_PROMPT}"
+          else
+            issue_body_clean=$(printf '%s' "${ISSUE_BODY}" | tr -d '\r')
+            indented_issue_body=$(printf '%s\n' "${issue_body_clean}" | sed 's/^/    /')
+            default_prompt=$(cat <<EOF
+You are Codex, an autonomous coding agent running inside a GitHub Actions job for ${REPOSITORY}.
+The repository is already checked out on branch "${BRANCH_NAME}", created from ${BASE_BRANCH}.
+Follow the repository's established coding conventions.
+
+Context:
+  - Issue number: #${ISSUE_NUMBER}
+  - Issue title: ${ISSUE_TITLE}
+  - Issue body:
+    ----
+${indented_issue_body}
+    ----
+
+Your tasks:
+  1. Implement the feature or fix requested in the issue.
+  2. Keep changes minimal and focused on the request.
+  3. Stage only relevant files.
+  4. Create one or more commits. Each commit message must start with "codex:" and include "#${ISSUE_NUMBER}".
+  5. Leave the branch ready for this workflow to push (do not run git push yourself).
+  6. Summarize the work and list changed files in your final response.
+
+Constraints:
+  - Do not modify unrelated files or rewrite history.
+  - Prefer using apply_patch for file edits when practical.
+  - Run available tests when safe and include results in the final summary.
+  - When executing tests or other long-running commands, prefix them with 'timeout 5m' to avoid hangs.
+  - If the request is ambiguous or unsafe, stop and explain why instead of making changes.
+
+Begin by reviewing the issue details and the existing codebase as needed.
+EOF
+)
+            final_prompt="${default_prompt}"
+          fi
+
+          {
+            printf 'prompt<<EOF\n'
+            printf '%s\n' "$final_prompt"
+            printf 'EOF\n'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Codex
+        if: steps.evaluate.outputs.should_run == 'true'
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ env.OPENAI_API_KEY }}
+          responses-api-endpoint: ${{ env.OPENAI_RESPONSES_ENDPOINT }}
+          prompt: ${{ steps.assemble_prompt.outputs.prompt }}
+
+      - name: Push branch updates
+        if: steps.evaluate.outputs.should_run == 'true'
+        env:
+          TARGET_BRANCH: ${{ steps.evaluate.outputs.branch }}
+        run: |
+          set -eo pipefail
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::Uncommitted changes remain after Codex run. Ensure commits are created before push."
+            exit 1
+          fi
+          git push --set-upstream origin "$TARGET_BRANCH"
+
+      - name: Post Codex summary
+        if: steps.evaluate.outputs.should_run == 'true' && steps.run_codex.outputs.final-message != ''
+        uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ steps.run_codex.outputs['final-message'] }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: process.env.CODEX_FINAL_MESSAGE,
+            });
+
+      - name: Note skipped execution
+        if: steps.evaluate.outputs.should_run != 'true'
+        run: |
+          reason="${{ steps.evaluate.outputs.skip_reason }}"
+          if [[ -z "$reason" ]]; then
+            reason="Codex workflow skipped."
+          fi
+          echo "$reason"
