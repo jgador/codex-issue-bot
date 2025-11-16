@@ -44,6 +44,8 @@ Reusable GitHub Actions workflows that route issue-driven work to [openai/codex-
        secrets:
          OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
          OPENAI_RESPONSES_ENDPOINT: ${{ secrets.AZURE_OPENAI_RESPONSES_ENDPOINT }}
+
+   A live example of this setup is available in [`jgador/loggle`](https://github.com/jgador/loggle/blob/master/.github/workflows/codex-issue-comment.yml), which forwards Azure secrets and supplies a custom prompt for comment-driven iterations.
    ```
 
 3. **Open an issue with `/codex`** using the bundled template `.github/ISSUE_TEMPLATE/codex-request.md`. The workflow checks ownership, sets up a branch, runs Codex, pushes commits, and comments the final summary.
