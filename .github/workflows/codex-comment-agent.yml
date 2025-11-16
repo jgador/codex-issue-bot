@@ -28,8 +28,6 @@ on:
         required: true
       OPENAI_RESPONSES_ENDPOINT:
         required: true
-      GITHUB_TOKEN:
-        required: true
 
 permissions:
   contents: write
