@@ -7,7 +7,7 @@ Reusable GitHub Actions workflows that route issue-driven work to [openai/codex-
 1. **Add secrets** to the consuming repository:
    - `OPENAI_API_KEY`
    - `OPENAI_RESPONSES_ENDPOINT`
-2. **Reference the reusable workflow** from your repository. Example for `/codex` issues:
+2. **Reference the reusable workflow** from your repository. Example for `/codex` issues (use `secrets: inherit` only if your repo already defines `OPENAI_API_KEY` and `OPENAI_RESPONSES_ENDPOINT` under the same names):
 
    ```yaml
    name: Codex Issue Automation
@@ -38,10 +38,12 @@ Reusable GitHub Actions workflows that route issue-driven work to [openai/codex-
    jobs:
      codex:
        uses: your-org/your-repo/.github/workflows/codex-comment-agent.yml@v1
-       secrets: inherit
        with:
          base-branch: master
          require-owner: true
+       secrets:
+         OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+         OPENAI_RESPONSES_ENDPOINT: ${{ secrets.AZURE_OPENAI_RESPONSES_ENDPOINT }}
    ```
 
 3. **Open an issue with `/codex`** using the bundled template `.github/ISSUE_TEMPLATE/codex-request.md`. The workflow checks ownership, sets up a branch, runs Codex, pushes commits, and comments the final summary.
@@ -65,6 +67,7 @@ Codex’s final response is posted back on the originating issue or comment. If 
 
 - Issue template: `.github/ISSUE_TEMPLATE/codex-request.md` pre-populates `/codex` and a branch hint (`codex/issue-{{ number }}`).
 - Custom prompt: pass the `prompt` input to supply your own instructions; omit it to rely on the built-in context/tasks/constraints.
+- Secrets mapping: if your repository stores provider keys under different names (for example `AZURE_OPENAI_API_KEY`), forward them in the `secrets:` block when invoking the reusable workflow so it receives `OPENAI_API_KEY` and `OPENAI_RESPONSES_ENDPOINT`.
 
 ## Security notes
 
