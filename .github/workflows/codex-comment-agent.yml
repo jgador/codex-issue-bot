@@ -159,41 +159,41 @@ jobs:
             comment_body_clean=$(printf '%s' "${COMMENT_BODY}" | tr -d '\r')
             indented_comment_body=$(printf '%s\n' "${comment_body_clean}" | sed 's/^/    /')
 
-            default_prompt=$(cat <<EOF
-You are Codex, an autonomous coding agent iterating on an existing issue for ${REPOSITORY}.
-The repository is already checked out on branch "${BRANCH_NAME}", created from ${BASE_BRANCH}.
-Follow the repository's established coding conventions.
-
-Context:
-  - Issue number: #${ISSUE_NUMBER}
-  - Issue title: ${ISSUE_TITLE}
-  - Issue body:
-    ----
-${indented_issue_body}
-    ----
-  - Latest comment (iteration request):
-    ----
-${indented_comment_body}
-    ----
-
-Your tasks:
-  1. Review the existing changes on this branch and the new comment instructions.
-  2. Implement the requested updates while keeping changes minimal and focused.
-  3. Stage only relevant files.
-  4. Create one or more commits. Each commit message must start with "codex:" and include "#${ISSUE_NUMBER}".
-  5. Leave the branch ready for this workflow to push (do not run git push yourself).
-  6. Summarize the work and list changed files in your final response.
-
-Constraints:
-  - Do not modify unrelated files or rewrite history.
-  - Prefer using apply_patch for file edits when practical.
-  - Run available tests when safe and include results in the final summary.
-  - When executing tests or other long-running commands, prefix them with 'timeout 5m' to avoid hangs.
-  - If the request is ambiguous or unsafe, stop and explain why instead of making changes.
-
-Begin by reviewing the repository state and applying the requested iteration.
-EOF
-)
+            default_prompt="$(
+              printf '%s\n' \
+                "You are Codex, an autonomous coding agent iterating on an existing issue for ${REPOSITORY}." \
+                "The repository is already checked out on branch \"${BRANCH_NAME}\", created from ${BASE_BRANCH}." \
+                "Follow the repository's established coding conventions." \
+                "" \
+                "Context:" \
+                "  - Issue number: #${ISSUE_NUMBER}" \
+                "  - Issue title: ${ISSUE_TITLE}" \
+                "  - Issue body:" \
+                "    ----" \
+                "${indented_issue_body}" \
+                "    ----" \
+                "  - Latest comment (iteration request):" \
+                "    ----" \
+                "${indented_comment_body}" \
+                "    ----" \
+                "" \
+                "Your tasks:" \
+                "  1. Review the existing changes on this branch and the new comment instructions." \
+                "  2. Implement the requested updates while keeping changes minimal and focused." \
+                "  3. Stage only relevant files." \
+                "  4. Create one or more commits. Each commit message must start with \"codex:\" and include \"#${ISSUE_NUMBER}\"." \
+                "  5. Leave the branch ready for this workflow to push (do not run git push yourself)." \
+                "  6. Summarize the work and list changed files in your final response." \
+                "" \
+                "Constraints:" \
+                "  - Do not modify unrelated files or rewrite history." \
+                "  - Prefer using apply_patch for file edits when practical." \
+                "  - Run available tests when safe and include results in the final summary." \
+                "  - When executing tests or other long-running commands, prefix them with 'timeout 5m' to avoid hangs." \
+                "  - If the request is ambiguous or unsafe, stop and explain why instead of making changes." \
+                "" \
+                "Begin by reviewing the repository state and applying the requested iteration."
+            )"
             final_prompt="${default_prompt}"
           fi
 
